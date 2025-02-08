@@ -511,7 +511,7 @@ async def reloadlist_command(interaction: discord.Interaction):
         results = []
         for uid, url in data_manager.user_image_map.items():
             try:
-                async with session.head(url, timeout=10) as response:
+                async with session.head(url, timeout=10, allow_redirects=True) as response:
                     results.append((uid, url, response.status))
             except Exception as e:
                 results.append((uid, url, None))

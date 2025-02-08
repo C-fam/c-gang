@@ -310,7 +310,7 @@ class CheckEligibilityButton(discord.ui.Button):
         image_url = data_manager.user_image_map.get(user_id_str)
         if image_url:
             embed = discord.Embed(
-                title="Your C image",
+                title="Your C Image",
                 description="Here's your C",
                 color=EMBED_COLOR
             )
@@ -340,12 +340,12 @@ class CheckEligibilityButton(discord.ui.Button):
         asyncio.create_task(background_tasks())
 
 
-# 2. Check your C ボタン（画像確認のみ）
+# 2. Check Your C ボタン（画像確認のみ）
 class CheckYourCButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
             custom_id="check_your_c_button",
-            label="Check your C",
+            label="Check Your C",
             style=discord.ButtonStyle.primary  # 希望の色 #9383F8 に近い色として primary を使用
         )
 
@@ -364,7 +364,7 @@ class CheckYourCButton(discord.ui.Button):
                 ephemeral=True
             )
         embed = discord.Embed(
-            title="Your C image",
+            title="Your C Image",
             description="Here's your C",
             color=EMBED_COLOR
         )

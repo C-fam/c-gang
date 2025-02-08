@@ -62,8 +62,8 @@ def format_time(iso_str: str) -> str:
         return iso_str
 
 
-# 定数：Embed の色（#CCC4FC）
-EMBED_COLOR = int("CCC4FC", 16)
+# 定数：Embed の色（#836EF9）
+EMBED_COLOR = int("836EF9", 16)
 
 
 class DataManager:

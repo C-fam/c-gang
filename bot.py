@@ -13,23 +13,24 @@ from dotenv import load_dotenv
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# ログ設定
+# --- ログ設定 ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-# 環境変数の読み込み (.envファイルから BOT_TOKEN, GOOGLE_CREDENTIALS 等を取得)
+# --- 環境変数の読み込み ---
 load_dotenv()
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("BOT_TOKEN")  # Discord Botのトークン
 if TOKEN is None:
     logger.error("BOT_TOKEN not found in environment variables.")
     exit(1)
 
-# Google Sheets 認証
+# --- Google Sheets 認証 ---
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-google_credentials_str = os.getenv("GOOGLE_CREDENTIALS")
+google_credentials_str = os.getenv("GOOGLE_CREDENTIALS")  # .env に JSON形式で格納しておく
 if google_credentials_str is None:
     logger.error("GOOGLE_CREDENTIALS not found in environment variables.")
     exit(1)
+
 try:
     creds_dict = json.loads(google_credentials_str)
 except Exception as e:
@@ -43,13 +44,14 @@ except Exception as e:
     logger.error("Failed to authorize Google Sheets client: %s", e)
     exit(1)
 
-# スプレッドシート名 (あなたの場合: "C's Point Management Sheet")
+# スプレッドシート名 (今回: "C's Point Management Sheet")
 SPREADSHEET_NAME = "C's Point Management Sheet"
 try:
     SPREADSHEET = GSPREAD_CLIENT.open(SPREADSHEET_NAME)
 except Exception as e:
     logger.error("Failed to open spreadsheet '%s': %s", SPREADSHEET_NAME, e)
     exit(1)
+
 
 def format_time(iso_str: str) -> str:
     """ISO8601文字列を 'YYYY-MM-DD HH:MM:SS' 形式に変換"""
@@ -62,17 +64,18 @@ def format_time(iso_str: str) -> str:
 
 class DataManager:
     def __init__(self):
-        # UID→画像URLのマッピング用
+        """ボット全体のデータ管理を行うクラス."""
+        # UID→画像URLのマッピング
         self.valid_uids = set()
         self.user_image_map = {}
 
-        # 各ギルド設定や履歴
+        # ギルド設定や履歴の保存用
         self.guild_config = {}     # {guild_id: {"server_name", "channel_id", "role_id", "message_id"}}
         self.granted_history = {}  # {guild_id: [ {"uid", "username", "time"}, ... ]}
 
     async def get_sheet(self, sheet_name: str, rows="1000", cols="10"):
         """
-        指定したワークシートを取得し、存在しなければ作成して返す
+        指定ワークシートを取得し、無ければ作成して返す(非同期).
         """
         def _get_sheet():
             try:
@@ -81,17 +84,25 @@ class DataManager:
                 return SPREADSHEET.add_worksheet(title=sheet_name, rows=rows, cols=cols)
         return await asyncio.to_thread(_get_sheet)
 
-    # ▼ CSVではなく "UID_List" シートからUIDと画像URLを読み込む ▼
+    # ▼ 重要: UID_List シートの A1=Discord ID, B1=UID, C1=IMGURL ▼
     async def load_uid_list_from_sheet(self):
-        ws = await self.get_sheet("UID_List")  # シート名: UID_List
-        # 例: A列=UID, B列=IMGURL
+        """
+        'UID_List' シートから B列: UID、C列: IMGURL を取得し、
+        self.valid_uids と self.user_image_map に保存する.
+        """
+        ws = await self.get_sheet("UID_List")
+
         def _fetch_data():
+            # get_all_records() は 1行目をヘッダーとして読み込み、2行目以降を dict として返す
+            # → {'Discord ID': ..., 'UID': ..., 'IMGURL': ...} のような形
             return ws.get_all_records()
+
         rows = await asyncio.to_thread(_fetch_data)
 
         new_uids = set()
         new_image_map = {}
         for row in rows:
+            # シート上のB列が "UID", C列が "IMGURL" となっている前提
             uid = str(row.get("UID", "")).strip()
             img_url = str(row.get("IMGURL", "")).strip()
             if uid:
@@ -104,6 +115,9 @@ class DataManager:
         logger.info("Loaded %d UIDs from UID_List sheet.", len(self.valid_uids))
 
     async def load_guild_config_sheet(self):
+        """
+        'guild_config' シートから読み込み、self.guild_config に保存.
+        """
         def _load():
             config = {}
             try:
@@ -124,6 +138,9 @@ class DataManager:
         self.guild_config = await asyncio.to_thread(_load)
 
     async def save_guild_config_sheet(self):
+        """
+        self.guild_config の内容を 'guild_config' シートに上書き保存.
+        """
         ws = await self.get_sheet("guild_config", rows="100", cols="10")
         headers = ["guild_id", "server_name", "channel_id", "role_id", "message_id"]
         data = [headers]
@@ -140,10 +157,14 @@ class DataManager:
         def _update():
             ws.clear()
             ws.update("A1", data)
+
         await asyncio.to_thread(_update)
         logger.info("Guild config sheet saved.")
 
     async def load_granted_history_sheet(self):
+        """
+        'granted_history' シートを読み込み、self.granted_history に格納.
+        """
         def _load():
             history = {}
             try:
@@ -163,12 +184,14 @@ class DataManager:
         self.granted_history = await asyncio.to_thread(_load)
 
     async def save_granted_history_sheet(self):
+        """
+        self.granted_history の内容を 'granted_history' シートに上書き保存.
+        """
         ws = await self.get_sheet("granted_history", rows="1000", cols="10")
         headers = ["guild_id", "uid", "username", "time"]
         data = [headers]
         for gid, records in self.granted_history.items():
             for record in records:
-                # uidは文字列として保存（先頭にシングルクォート）
                 uid_str = f"'{record.get('uid', '')}"
                 time_str = format_time(record.get("time", ""))
                 row = [gid, uid_str, record.get("username", ""), time_str]
@@ -177,10 +200,14 @@ class DataManager:
         def _update():
             ws.clear()
             ws.update("A1", data)
+
         await asyncio.to_thread(_update)
         logger.info("Granted history sheet saved.")
 
     async def append_log_to_sheet(self, guild_id: str, uid: str, username: str, timestamp: str):
+        """
+        'Log' シートへ 1行追記 (append_row).
+        """
         ws = await self.get_sheet("Log")
         uid_str = f"'{uid}"
         time_str = format_time(timestamp)
@@ -195,30 +222,36 @@ class DataManager:
 
     async def load_all_data(self):
         """
-        Bot起動時などに全データを読み込む。
+        Bot起動時 (on_ready) に呼び出される想定: 全シートの情報を読み込む.
         """
+        # ここで UID_List からUIDと画像URLをセット
         await self.load_uid_list_from_sheet()
         await self.load_guild_config_sheet()
         await self.load_granted_history_sheet()
 
     async def save_all_data(self):
         """
-        Bot終了時などに全データを保存（必要に応じて）。
+        必要があればBot終了前などに呼ぶ想定: 設定＆履歴をシートへ保存.
         """
         await self.save_guild_config_sheet()
         await self.save_granted_history_sheet()
 
 
-# DataManagerインスタンス
 data_manager = DataManager()
 
-# Discord Bot の準備
+# --- Discord Bot ---
 intents = discord.Intents.default()
-intents.message_content = True
+
+# ★もしメンバー意図を使うなら、Developer Portalで「Server Members Intent」をONにしておく
 intents.members = True
+
+# ★メッセージ内容を扱わないなら下行はFalseでもOK。使う場合はPortalで「Message Content Intent」もON。
+intents.message_content = True
+
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- ボタン UI ---
+
+# ---------- 以下、ボタンコールバックやスラッシュコマンドの実装 ----------
 class CheckEligibilityButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
@@ -231,7 +264,7 @@ class CheckEligibilityButton(discord.ui.Button):
         guild_id_str = str(interaction.guild_id)
         user_id_str = str(interaction.user.id)
 
-        # UIDチェック
+        # UID チェック
         if user_id_str not in data_manager.valid_uids:
             if not interaction.response.is_done():
                 return await interaction.response.send_message(
@@ -244,7 +277,6 @@ class CheckEligibilityButton(discord.ui.Button):
                     ephemeral=True
                 )
 
-        # ギルド設定取得
         info = data_manager.guild_config.get(guild_id_str)
         if not info:
             if not interaction.response.is_done():
@@ -271,7 +303,7 @@ class CheckEligibilityButton(discord.ui.Button):
                     ephemeral=True
                 )
 
-        # 既にロール所持
+        # すでにロールがある場合
         if role in interaction.user.roles:
             if not interaction.response.is_done():
                 return await interaction.response.send_message(
@@ -299,11 +331,11 @@ class CheckEligibilityButton(discord.ui.Button):
                     ephemeral=True
                 )
 
-        # テキストはエフェメラル (本人のみ)
+        # まずエフェメラルで成功メッセージ
         response_text = f"You are **eligible** (UID: {user_id_str}). Role {role.mention} has been granted!"
         await interaction.response.send_message(response_text, ephemeral=True)
 
-        # 画像URLを取得してパブリックにEmbed送信
+        # 画像URLを取得し、パブリックに送信
         image_url = data_manager.user_image_map.get(user_id_str)
         if image_url:
             embed = discord.Embed(
@@ -312,10 +344,9 @@ class CheckEligibilityButton(discord.ui.Button):
                 color=discord.Color.green()
             )
             embed.set_image(url=image_url)
-            # ephemeral=False => 全員が見えるパブリックメッセージ
             await interaction.followup.send(embed=embed, ephemeral=False)
 
-        # ログ書き込み
+        # ログ記録は非同期タスク
         async def background_tasks():
             timestamp = datetime.utcnow().isoformat()
             log_entry = {
@@ -339,7 +370,6 @@ class CheckEligibilityView(discord.ui.View):
         self.add_item(CheckEligibilityButton())
 
 
-# --- 履歴表示用のページングUI ---
 class HistoryPagerView(discord.ui.View):
     def __init__(self, records):
         super().__init__(timeout=None)
@@ -410,19 +440,23 @@ class NextButton(discord.ui.Button):
         await interaction.response.edit_message(embed=view.get_page_embed(), view=view)
 
 
-# --- Botイベント ---
 @bot.event
 async def on_ready():
     logger.info("Bot logged in as %s", bot.user)
-    await data_manager.load_all_data()
-    logger.info("UID loaded: %d", len(data_manager.valid_uids))
+    # スプレッドシート読み込み
+    try:
+        await data_manager.load_all_data()
+        logger.info("UID loaded: %d", len(data_manager.valid_uids))
+    except Exception as e:
+        logger.error("Error in on_ready while loading data: %s", e)
+    # スラッシュコマンドを同期
     try:
         await bot.tree.sync()
         logger.info("Slash commands synced.")
     except Exception as e:
         logger.error("Error syncing slash commands: %s", e)
 
-    # 永続View登録
+    # 永続ビュー登録 (チェックボタン)
     bot.add_view(CheckEligibilityView())
 
 
@@ -435,18 +469,14 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await interaction.response.send_message("An error occurred. Please try again or contact an admin.", ephemeral=True)
 
 
-# --- /setup コマンド ---
+# /setup コマンド (管理者のみ)
 @bot.tree.command(name="setup", description="Set up or update the eligibility button and assigned role.")
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(
     channel="Channel for the check button",
     role="Role to grant if eligible"
 )
-async def setup_command(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel,
-    role: discord.Role
-):
+async def setup_command(interaction: discord.Interaction, channel: discord.TextChannel, role: discord.Role):
     guild_id_str = str(interaction.guild_id)
     old_info = data_manager.guild_config.get(guild_id_str, {})
     old_msg_id = old_info.get("message_id")
@@ -479,7 +509,7 @@ async def setup_command(
             except Exception as e:
                 logger.error("Error editing old message: %s", e)
 
-    # 新規メッセージ
+    # 新規でメッセージを送る
     embed = discord.Embed(
         title="Check Eligibility",
         description=embed_text,
@@ -500,7 +530,7 @@ async def setup_command(
     )
 
 
-# --- /reloadlist コマンド ---
+# /reloadlist コマンド (管理者のみ)
 @bot.tree.command(name="reloadlist", description="Reload the user list from UID_List sheet.")
 @app_commands.default_permissions(administrator=True)
 async def reloadlist_command(interaction: discord.Interaction):
@@ -512,7 +542,7 @@ async def reloadlist_command(interaction: discord.Interaction):
     )
 
 
-# --- /history コマンド ---
+# /history コマンド (管理者のみ)
 @bot.tree.command(name="history", description="Show the role-grant history in pages of 10.")
 @app_commands.default_permissions(administrator=True)
 async def history_command(interaction: discord.Interaction):
@@ -526,7 +556,7 @@ async def history_command(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
-# --- /extractinfo コマンド ---
+# /extractinfo コマンド (管理者のみ)
 @bot.tree.command(name="extractinfo", description="Extract server info and recent role assignments.")
 @app_commands.default_permissions(administrator=True)
 async def extractinfo_command(interaction: discord.Interaction):
@@ -557,7 +587,7 @@ async def extractinfo_command(interaction: discord.Interaction):
     await interaction.response.send_message(report, ephemeral=True)
 
 
-# --- /reset_history コマンド ---
+# /reset_history コマンド (管理者のみ)
 @bot.tree.command(name="reset_history", description="Reset the role-grant history (admin only).")
 @app_commands.default_permissions(administrator=True)
 async def reset_history_command(interaction: discord.Interaction):

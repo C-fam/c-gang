@@ -13,8 +13,7 @@ from dotenv import load_dotenv
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# TEST CODE: HTTPリクエスト処理用
-import aiohttp
+# --- TEST CODE for HTTP requests has been removed ---
 
 # --- ログ設定 ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -48,7 +47,7 @@ except Exception as e:
     exit(1)
 
 # --- スプレッドシート名 ---
-SPREADSHEET_NAME = "C's Point Management Sheet"  # ここをあなたのシート名に
+SPREADSHEET_NAME = "C's Point Management Sheet"  # スプレッドシート名
 try:
     SPREADSHEET = GSPREAD_CLIENT.open(SPREADSHEET_NAME)
 except Exception as e:
@@ -64,6 +63,9 @@ def format_time(iso_str: str) -> str:
     except Exception:
         return iso_str
 
+
+# 定数：Embed の色（#CCC4FC）
+EMBED_COLOR = int("CCC4FC", 16)
 
 class DataManager:
     def __init__(self):
@@ -241,34 +243,37 @@ data_manager = DataManager()
 
 # --- Discord Bot の準備 ---
 intents = discord.Intents.default()
-# 以下をTrueにする場合、Discordの開発者ポータルで該当IntentをONにしてください
+# Discord開発者ポータルで該当IntentをONにしてください
 intents.members = True
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ※ Discord のボタンでカスタムの HEX カラー指定は公式にはサポートされていません。
+# ここでは style=discord.ButtonStyle.primary を使用しています。
 
-# ---------- ボタンUI: すべてエフェメラルで返信する実装 ----------
+# ---------- ボタンUI ----------
+# 1. Check Eligibility ボタン (ロール付与を行う)
 class CheckEligibilityButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
             custom_id="check_eligibility_button",
             label="Check Eligibility",
-            style=discord.ButtonStyle.primary
+            style=discord.ButtonStyle.primary  # 希望の色 #9383F8 に近い色を模倣できれば…
         )
 
     async def callback(self, interaction: discord.Interaction):
         guild_id_str = str(interaction.guild_id)
         user_id_str = str(interaction.user.id)
 
-        # -- 1) まずUIDチェック --
+        # まずUIDチェック
         if user_id_str not in data_manager.valid_uids:
             return await interaction.response.send_message(
                 f"You are not eligible (UID: {user_id_str}).",
                 ephemeral=True
             )
 
-        # -- 2) guild_configチェック --
+        # guild_configチェック
         info = data_manager.guild_config.get(guild_id_str)
         if not info:
             return await interaction.response.send_message(
@@ -283,14 +288,14 @@ class CheckEligibilityButton(discord.ui.Button):
                 ephemeral=True
             )
 
-        # -- 3) すでにロール所持していないか --
+        # すでにロール所持していないか
         if role in interaction.user.roles:
             return await interaction.response.send_message(
                 f"You already have {role.mention}.",
                 ephemeral=True
             )
 
-        # -- ロール付与 (優先順位: まずロール付与を試みる) --
+        # ロール付与
         try:
             await interaction.user.add_roles(role)
         except discord.Forbidden:
@@ -299,15 +304,15 @@ class CheckEligibilityButton(discord.ui.Button):
                 ephemeral=True
             )
 
-        # -- 付与成功 → エフェメラルでメッセージと画像をまとめて返す --
+        # 付与成功 → エフェメラルでメッセージと画像（もしあれば）を返す
         response_text = f"You are **eligible** (UID: {user_id_str}). Role {role.mention} has been granted!"
         embed = None
         image_url = data_manager.user_image_map.get(user_id_str)
         if image_url:
             embed = discord.Embed(
-                title="Your Special Image",
-                description="Here's your image!",
-                color=discord.Color.green()
+                title="Your C image",
+                description="Here's your C",
+                color=EMBED_COLOR
             )
             embed.set_image(url=image_url)
 
@@ -317,7 +322,7 @@ class CheckEligibilityButton(discord.ui.Button):
             ephemeral=True
         )
 
-        # -- 最後にログ書き込み(バックグラウンド処理) --
+        # ログ書き込み（バックグラウンド処理）
         async def background_tasks():
             timestamp = datetime.utcnow().isoformat()
             log_entry = {
@@ -328,19 +333,51 @@ class CheckEligibilityButton(discord.ui.Button):
             data_manager.granted_history.setdefault(guild_id_str, []).append(log_entry)
             try:
                 await data_manager.save_granted_history_sheet()
-                await data_manager.append_log_to_sheet(
-                    guild_id_str, user_id_str, str(interaction.user), timestamp
-                )
+                await data_manager.append_log_to_sheet(guild_id_str, user_id_str, str(interaction.user), timestamp)
             except Exception as e:
                 logger.error("Background tasks error: %s", e)
 
         asyncio.create_task(background_tasks())
 
 
-class CheckEligibilityView(discord.ui.View):
+# 2. Check your C ボタン（画像確認のみ）
+class CheckYourCButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            custom_id="check_your_c_button",
+            label="Check your C",
+            style=discord.ButtonStyle.primary  # 希望の色 #9383F8 に近い色として primary を使用
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        user_id_str = str(interaction.user.id)
+        # UID チェック
+        if user_id_str not in data_manager.valid_uids:
+            return await interaction.response.send_message(
+                f"You are not eligible (UID: {user_id_str}).",
+                ephemeral=True
+            )
+        image_url = data_manager.user_image_map.get(user_id_str)
+        if not image_url:
+            return await interaction.response.send_message(
+                "No image found for your UID.",
+                ephemeral=True
+            )
+        embed = discord.Embed(
+            title="Your C image",
+            description="Here's your C",
+            color=EMBED_COLOR
+        )
+        embed.set_image(url=image_url)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# 3. 複合View: 2つのボタンをまとめる
+class CombinedView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(CheckEligibilityButton())
+        self.add_item(CheckYourCButton())
 
 
 # 履歴表示用のページングUI (管理者向け)
@@ -369,12 +406,10 @@ class HistoryPagerView(discord.ui.View):
 
     def get_page_embed(self):
         start = self.page * self.per_page
-        end = start + self.per_page
-        chunk = self.records[start:end]
+        chunk = self.records[start: start + self.per_page]
         lines = []
         for i, record in enumerate(chunk, start=1):
-            uid_raw = record["uid"]
-            uid_clean = uid_raw.lstrip("'")
+            uid_clean = record["uid"].lstrip("'")
             lines.append(f"{start + i}. <@{uid_clean}>")
         description = (
             "This list shows the server's role assignment history.\n"
@@ -384,7 +419,7 @@ class HistoryPagerView(discord.ui.View):
         embed = discord.Embed(
             title="Role Assignment History",
             description=description,
-            color=discord.Color.blue()
+            color=EMBED_COLOR
         )
         embed.set_footer(text=f"Page {self.page+1}/{self.max_page()} (Total {len(self.records)})")
         return embed
@@ -419,21 +454,17 @@ class NextButton(discord.ui.Button):
 async def on_ready():
     logger.info("Bot logged in as %s", bot.user)
     try:
-        # 起動時にスプレッドシート読み込み
         await data_manager.load_all_data()
         logger.info("UID loaded: %d", len(data_manager.valid_uids))
     except Exception as e:
         logger.error("Error in on_ready while loading data: %s", e)
-
     try:
-        # スラッシュコマンドを同期
         await bot.tree.sync()
         logger.info("Slash commands synced.")
     except Exception as e:
         logger.error("Error syncing slash commands: %s", e)
-
-    # 起動時に永続Viewを登録
-    bot.add_view(CheckEligibilityView())
+    # 永続Viewとして複合Viewを登録
+    bot.add_view(CombinedView())
 
 
 @bot.event
@@ -458,14 +489,14 @@ async def setup_command(interaction: discord.Interaction, channel: discord.TextC
     old_msg_id = old_info.get("message_id")
     old_ch_id = old_info.get("channel_id", 0)
 
-    embed_text = "Click the button below to see if you're on the list."
+    embed_text = "Click the buttons below to see if you're on the list and to check your C image."
     if old_msg_id and old_ch_id:
         old_ch = interaction.guild.get_channel(old_ch_id)
         if old_ch:
             try:
                 old_msg = await old_ch.fetch_message(old_msg_id)
-                embed = discord.Embed(title="Check Eligibility", description=embed_text, color=discord.Color.blue())
-                view = CheckEligibilityView()
+                embed = discord.Embed(title="Check Eligibility", description=embed_text, color=EMBED_COLOR)
+                view = CombinedView()
                 await old_msg.edit(embed=embed, view=view)
                 data_manager.guild_config[guild_id_str] = {
                     "server_name": interaction.guild.name,
@@ -481,8 +512,8 @@ async def setup_command(interaction: discord.Interaction, channel: discord.TextC
             except Exception as e:
                 logger.error("Error editing old message: %s", e)
 
-    embed = discord.Embed(title="Check Eligibility", description=embed_text, color=discord.Color.blue())
-    view = CheckEligibilityView()
+    embed = discord.Embed(title="Check Eligibility", description=embed_text, color=EMBED_COLOR)
+    view = CombinedView()
     new_msg = await channel.send(embed=embed, view=view)
     data_manager.guild_config[guild_id_str] = {
         "server_name": interaction.guild.name,
@@ -504,26 +535,8 @@ async def reloadlist_command(interaction: discord.Interaction):
     await data_manager.load_uid_list_from_sheet()
     uid_count = len(data_manager.valid_uids)
     img_count = len(data_manager.user_image_map)
-    
-    # ===========================
-    # TEST CODE START: HTTPリクエストによる画像リンクチェック
-    async with aiohttp.ClientSession() as session:
-        results = []
-        for uid, url in data_manager.user_image_map.items():
-            try:
-                async with session.head(url, timeout=10, allow_redirects=True) as response:
-                    results.append((uid, url, response.status))
-            except Exception as e:
-                results.append((uid, url, None))
-        successful = [r for r in results if r[2] == 200]
-        failed = [r for r in results if r[2] != 200]
-        test_result_msg = "\n".join([f"UID {uid}: {url} -> status {status}" for uid, url, status in results])
-    # TEST CODE END
-    # ===========================
-    
     await interaction.response.send_message(
-        f"Reloaded user list from sheet.\nUIDs loaded: {uid_count}\nImage links available: {img_count}\n"
-        f"HTTP check: {len(successful)} succeeded, {len(failed)} failed.\nDetails:\n{test_result_msg}",
+        f"Reloaded user list from sheet.\nUIDs loaded: {uid_count}\nImage links available: {img_count}",
         ephemeral=True
     )
 

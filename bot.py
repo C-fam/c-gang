@@ -13,6 +13,9 @@ from dotenv import load_dotenv
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+# TEST CODE: HTTPリクエスト処理用
+import aiohttp
+
 # --- ログ設定 ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -71,7 +74,7 @@ class DataManager:
         self.user_image_map = {}      # UID -> 画像URL
 
         self.guild_config = {}        # {guild_id: {...}}
-        self.granted_history = {}     # {guild_id: [{"uid","username","time"},...]}
+        self.granted_history = {}     # {guild_id: [{"uid", "username", "time"}, ...]}
 
     async def get_sheet(self, sheet_name: str, rows="1000", cols="10"):
         """
@@ -92,8 +95,8 @@ class DataManager:
         ws = await self.get_sheet("UID_List")
 
         def _fetch_data():
-            # get_all_records() は 1行目をヘッダーとして読み込み,
-            # 2行目以降を [{'Discord ID':..., 'UID':..., 'IMGURL':...}, ...] の形で返す
+            # get_all_records() は 1行目をヘッダーとして読み込み、
+            # 2行目以降を [{'Discord ID': ..., 'UID': ..., 'IMGURL': ...}, ...] の形で返す
             return ws.get_all_records()
 
         rows = await asyncio.to_thread(_fetch_data)
@@ -260,7 +263,6 @@ class CheckEligibilityButton(discord.ui.Button):
 
         # -- 1) まずUIDチェック --
         if user_id_str not in data_manager.valid_uids:
-            # 不適格
             return await interaction.response.send_message(
                 f"You are not eligible (UID: {user_id_str}).",
                 ephemeral=True
@@ -297,7 +299,7 @@ class CheckEligibilityButton(discord.ui.Button):
                 ephemeral=True
             )
 
-        # -- 付与成功 → 次にエフェメラルでメッセージと画像をまとめて返す --
+        # -- 付与成功 → エフェメラルでメッセージと画像をまとめて返す --
         response_text = f"You are **eligible** (UID: {user_id_str}). Role {role.mention} has been granted!"
         embed = None
         image_url = data_manager.user_image_map.get(user_id_str)
@@ -315,7 +317,7 @@ class CheckEligibilityButton(discord.ui.Button):
             ephemeral=True
         )
 
-        # -- 3) 最後にログ書き込み(バックグラウンド処理) --
+        # -- 最後にログ書き込み(バックグラウンド処理) --
         async def background_tasks():
             timestamp = datetime.utcnow().isoformat()
             log_entry = {
@@ -324,7 +326,6 @@ class CheckEligibilityButton(discord.ui.Button):
                 "time": timestamp
             }
             data_manager.granted_history.setdefault(guild_id_str, []).append(log_entry)
-
             try:
                 await data_manager.save_granted_history_sheet()
                 await data_manager.append_log_to_sheet(
@@ -407,7 +408,7 @@ class NextButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: HistoryPagerView = self.view  # type: ignore
-        if view.page < self.view.max_page() - 1:
+        if view.page < view.max_page() - 1:
             view.page += 1
         view.update_buttons()
         await interaction.response.edit_message(embed=view.get_page_embed(), view=view)
@@ -501,9 +502,28 @@ async def setup_command(interaction: discord.Interaction, channel: discord.TextC
 @app_commands.default_permissions(administrator=True)
 async def reloadlist_command(interaction: discord.Interaction):
     await data_manager.load_uid_list_from_sheet()
-    count = len(data_manager.valid_uids)
+    uid_count = len(data_manager.valid_uids)
+    img_count = len(data_manager.user_image_map)
+    
+    # ===========================
+    # TEST CODE START: HTTPリクエストによる画像リンクチェック
+    async with aiohttp.ClientSession() as session:
+        results = []
+        for uid, url in data_manager.user_image_map.items():
+            try:
+                async with session.head(url, timeout=10) as response:
+                    results.append((uid, url, response.status))
+            except Exception as e:
+                results.append((uid, url, None))
+        successful = [r for r in results if r[2] == 200]
+        failed = [r for r in results if r[2] != 200]
+        test_result_msg = "\n".join([f"UID {uid}: {url} -> status {status}" for uid, url, status in results])
+    # TEST CODE END
+    # ===========================
+    
     await interaction.response.send_message(
-        f"Reloaded user list from sheet. {count} UIDs found.",
+        f"Reloaded user list from sheet.\nUIDs loaded: {uid_count}\nImage links available: {img_count}\n"
+        f"HTTP check: {len(successful)} succeeded, {len(failed)} failed.\nDetails:\n{test_result_msg}",
         ephemeral=True
     )
 

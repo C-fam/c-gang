@@ -13,8 +13,6 @@ from dotenv import load_dotenv
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# --- TEST CODE for HTTP requests has been removed ---
-
 # --- ログ設定 ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -47,7 +45,7 @@ except Exception as e:
     exit(1)
 
 # --- スプレッドシート名 ---
-SPREADSHEET_NAME = "C's Point Management Sheet"  # スプレッドシート名
+SPREADSHEET_NAME = "C's Point Management Sheet"  # ここをあなたのシート名に
 try:
     SPREADSHEET = GSPREAD_CLIENT.open(SPREADSHEET_NAME)
 except Exception as e:
@@ -66,6 +64,7 @@ def format_time(iso_str: str) -> str:
 
 # 定数：Embed の色（#CCC4FC）
 EMBED_COLOR = int("CCC4FC", 16)
+
 
 class DataManager:
     def __init__(self):
@@ -112,7 +111,6 @@ class DataManager:
                 new_uids.add(uid)
                 if img_url:
                     new_image_map[uid] = img_url
-
         self.valid_uids = new_uids
         self.user_image_map = new_image_map
         logger.info("Loaded %d UIDs from UID_List sheet.", len(self.valid_uids))
@@ -195,7 +193,12 @@ class DataManager:
         data = [headers]
         for gid, records in self.granted_history.items():
             for record in records:
-                uid_str = f"'{record.get('uid', '')}"
+                raw_uid = record.get("uid", "")
+                # UID の先頭に既にシングルクォートが付いているかチェックし、なければ追加
+                if not raw_uid.startswith("'"):
+                    uid_str = f"'{raw_uid}"
+                else:
+                    uid_str = raw_uid
                 time_str = format_time(record.get("time", ""))
                 row = [gid, uid_str, record.get("username", ""), time_str]
                 data.append(row)
@@ -212,7 +215,11 @@ class DataManager:
         'Log' シートへ新しいログを1行追記.
         """
         ws = await self.get_sheet("Log")
-        uid_str = f"'{uid}"
+        # UID の先頭にシングルクォートを追加（既にあれば追加しない）
+        if not uid.startswith("'"):
+            uid_str = f"'{uid}"
+        else:
+            uid_str = uid
         time_str = format_time(timestamp)
 
         def _append():
@@ -250,23 +257,23 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ※ Discord のボタンでカスタムの HEX カラー指定は公式にはサポートされていません。
-# ここでは style=discord.ButtonStyle.primary を使用しています。
+#     希望のボタン色 (#9383F8) に近い色を使用する場合は、style=discord.ButtonStyle.primary を用います。
 
 # ---------- ボタンUI ----------
-# 1. Check Eligibility ボタン (ロール付与を行う)
+# 1. Check Eligibility ボタン (ロール付与処理)
 class CheckEligibilityButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
             custom_id="check_eligibility_button",
             label="Check Eligibility",
-            style=discord.ButtonStyle.primary  # 希望の色 #9383F8 に近い色を模倣できれば…
+            style=discord.ButtonStyle.primary
         )
 
     async def callback(self, interaction: discord.Interaction):
         guild_id_str = str(interaction.guild_id)
         user_id_str = str(interaction.user.id)
 
-        # まずUIDチェック
+        # UIDチェック
         if user_id_str not in data_manager.valid_uids:
             return await interaction.response.send_message(
                 f"You are not eligible (UID: {user_id_str}).",
@@ -304,7 +311,7 @@ class CheckEligibilityButton(discord.ui.Button):
                 ephemeral=True
             )
 
-        # 付与成功 → エフェメラルでメッセージと画像（もしあれば）を返す
+        # 付与成功 → エフェメラルでメッセージと画像（あれば）を返す
         response_text = f"You are **eligible** (UID: {user_id_str}). Role {role.mention} has been granted!"
         embed = None
         image_url = data_manager.user_image_map.get(user_id_str)
@@ -340,18 +347,17 @@ class CheckEligibilityButton(discord.ui.Button):
         asyncio.create_task(background_tasks())
 
 
-# 2. Check Your C ボタン（画像確認のみ）
+# 2. Check Your C ボタン (画像確認のみ)
 class CheckYourCButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
             custom_id="check_your_c_button",
             label="Check Your C",
-            style=discord.ButtonStyle.primary  # 希望の色 #9383F8 に近い色として primary を使用
+            style=discord.ButtonStyle.primary
         )
 
     async def callback(self, interaction: discord.Interaction):
         user_id_str = str(interaction.user.id)
-        # UID チェック
         if user_id_str not in data_manager.valid_uids:
             return await interaction.response.send_message(
                 f"You are not eligible (UID: {user_id_str}).",
@@ -372,7 +378,7 @@ class CheckYourCButton(discord.ui.Button):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-# 3. 複合View: 2つのボタンをまとめる
+# 3. CombinedView: 2つのボタンをまとめる
 class CombinedView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -463,7 +469,7 @@ async def on_ready():
         logger.info("Slash commands synced.")
     except Exception as e:
         logger.error("Error syncing slash commands: %s", e)
-    # 永続Viewとして複合Viewを登録
+    # 永続Viewとして CombinedView を登録
     bot.add_view(CombinedView())
 
 

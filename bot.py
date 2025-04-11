@@ -601,6 +601,153 @@ async def reset_history_command(interaction: discord.Interaction):
     await data_manager.save_granted_history_sheet()
     await interaction.response.send_message("History has been reset for this server.", ephemeral=True)
 
+# ---------- Bonus feature patch (add ABOVE "if __name__ == '__main__':") ----------
+
+import re
+# Helper: convert '15s', '30m', '2h', '1d' -> seconds
+def parse_duration_to_seconds(text: str) -> int:
+    m = re.fullmatch(r"(\d+)\s*([smhd])", text.lower().strip())
+    if not m:
+        return 15  # default 15 s
+    num, unit = int(m.group(1)), m.group(2)
+    return num * {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+
+# ------------------------------------------------------------------ #
+# 1) Extend DataManager with bonus‑log method
+async def _append_bonus_log_to_sheet(self, username: str, uid: str, timestamp: str):
+    ws = await self.get_sheet("Bonus_Log")          # auto‑create
+    def _append():
+        ws.append_row([username, uid, timestamp])
+    await asyncio.to_thread(_append)
+
+DataManager.append_bonus_log_to_sheet = _append_bonus_log_to_sheet
+
+# ------------------------------------------------------------------ #
+# 2) Override guild_config save / load so they handle bonus_role_id
+async def _save_guild_config_sheet(self):
+    ws = await self.get_sheet("guild_config", rows="100", cols="10")
+    headers = ["guild_id", "server_name", "channel_id",
+               "role_id", "message_id", "bonus_role_id"]
+    data = [headers]
+    for gid, conf in self.guild_config.items():
+        data.append([
+            gid,
+            conf.get("server_name", ""),
+            int(conf.get("channel_id", 0)),
+            int(conf.get("role_id", 0)),
+            int(conf.get("message_id", 0)),
+            int(conf.get("bonus_role_id", 0))
+        ])
+    def _update():
+        ws.clear()
+        ws.update("A1", data)
+    await asyncio.to_thread(_update)
+    logger.info("Guild config sheet saved (bonus_role_id included).")
+
+DataManager.save_guild_config_sheet = _save_guild_config_sheet
+
+async def _load_guild_config_sheet(self):
+    def _load():
+        cfg = {}
+        try:
+            ws = SPREADSHEET.worksheet("guild_config")
+            for row in ws.get_all_records():
+                gid = str(row.get("guild_id", "")).strip()
+                if gid:
+                    cfg[gid] = {
+                        "server_name": row.get("server_name", ""),
+                        "channel_id": int(row.get("channel_id") or 0),
+                        "role_id":    int(row.get("role_id") or 0),
+                        "message_id": int(row.get("message_id") or 0),
+                        "bonus_role_id": int(row.get("bonus_role_id") or 0)
+                    }
+        except Exception as e:
+            logger.error("Error loading guild_config: %s", e)
+        return cfg
+    self.guild_config = await asyncio.to_thread(_load)
+
+DataManager.load_guild_config_sheet = _load_guild_config_sheet
+# ------------------------------------------------------------------ #
+
+# 3) UI classes for bonus button
+class BonusButton(discord.ui.Button):
+    def __init__(self, log_func):
+        super().__init__(label="Claim Bonus", style=discord.ButtonStyle.success)
+        self.log_func = log_func
+
+    async def callback(self, interaction: discord.Interaction):
+        username = str(interaction.user)
+        uid = str(interaction.user.id)
+        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        await self.log_func(username, uid, ts)
+        await interaction.response.send_message(
+            "✅ Bonus claimed and logged!", ephemeral=True
+        )
+
+class BonusView(discord.ui.View):
+    def __init__(self, log_func):
+        super().__init__(timeout=None)
+        self.add_item(BonusButton(log_func))
+
+# ------------------------------------------------------------------ #
+# 4) /bonus_setting – choose role allowed to run /bonus
+@bot.tree.command(name="bonus_setting", description="Set role allowed to use /bonus")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(role="Role that can execute /bonus")
+async def bonus_setting_command(interaction: discord.Interaction, role: discord.Role):
+    gid = str(interaction.guild_id)
+    conf = data_manager.guild_config.get(gid, {})
+    conf["bonus_role_id"] = role.id
+    data_manager.guild_config[gid] = conf
+    await data_manager.save_guild_config_sheet()
+    await interaction.response.send_message(
+        f"The role {role.mention} is now allowed to use /bonus.", ephemeral=True
+    )
+
+# ------------------------------------------------------------------ #
+# 5) /bonus – post limited‑time button
+@bot.tree.command(name="bonus", description="Post a limited-time bonus button")
+@app_commands.describe(
+    channel="Channel where the button will appear",
+    duration="Lifetime (e.g. 15s / 30m / 1h / 1d)"
+)
+async def bonus_command(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    duration: str = "15s"
+):
+    gid = str(interaction.guild_id)
+    bonus_role_id = data_manager.guild_config.get(gid, {}).get("bonus_role_id", 0)
+
+    # Permission check
+    is_admin = interaction.user.guild_permissions.administrator
+    has_role = bonus_role_id and any(r.id == bonus_role_id for r in interaction.user.roles)
+    if not (is_admin or has_role):
+        return await interaction.response.send_message(
+            "❌ You don't have permission to run this command.", ephemeral=True
+        )
+
+    seconds = parse_duration_to_seconds(duration)
+    view = BonusView(data_manager.append_bonus_log_to_sheet)
+    msg = await channel.send(
+        f"⏳ Press **Claim Bonus** within `{duration}` to be recorded!",
+        view=view
+    )
+    await interaction.response.send_message(
+        f"Bonus button posted to {channel.mention} and will auto‑delete after {duration}.",
+        ephemeral=True
+    )
+
+    # Auto‑delete after given time
+    async def auto_delete():
+        await asyncio.sleep(seconds)
+        try:
+            await msg.delete()
+        except discord.NotFound:
+            pass
+    asyncio.create_task(auto_delete())
+
+# ---------- End of bonus feature patch ----------
 
 if __name__ == "__main__":
     bot.run(TOKEN)

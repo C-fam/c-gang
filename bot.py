@@ -87,10 +87,10 @@ def format_iso_time(iso_str: Optional[str]) -> str:
              return iso_str
 
 def parse_duration_to_seconds(text: str) -> int:
-    """'15s', '30m', '2h', '1d' のような文字列を秒数に変換"""
+    """'10s', '30m', '2h', '1d' のような文字列を秒数に変換"""
     match = re.fullmatch(r"(\d+)\s*([smhd])", text.lower().strip())
     if not match:
-        logger.warning(f"Invalid duration format: '{text}'. Using default 15s.")
+        logger.warning(f"Invalid duration format: '{text}'. Using default 10s.")
         return 10  # デフォルト10秒
     num, unit = int(match.group(1)), match.group(2)
     multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
@@ -871,8 +871,8 @@ async def remove_bonus_role_command(interaction: discord.Interaction, role: disc
 
 
 @bot.tree.command(name="bonus", description="Post a temporary button for users to claim a bonus.")
-@app_commands.describe(channel="Channel for the bonus button.", duration="Button lifetime (e.g., '15s', '10m', '1h'). Default: 15s.")
-async def bonus_command(interaction: discord.Interaction, channel: discord.TextChannel, duration: str = "15s"):
+@app_commands.describe(channel="Channel for the bonus button.", duration="Button lifetime (e.g., '10s', '10m', '1h'). Default: 10s.")
+async def bonus_command(interaction: discord.Interaction, channel: discord.TextChannel, duration: str = "10s"):
     """ボーナスコマンド (権限チェック修正)"""
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server member only.", ephemeral=True)

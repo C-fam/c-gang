@@ -164,9 +164,11 @@ class DataManager:
                 for row in records:
                     guild_id = str(row.get("guild_id", "")).strip()
                     if guild_id:
-                        bonus_role_ids_str = str(row.get("bonus_role_ids", "")).strip()
-                        # カンマ区切り文字列をリストに変換 (空文字列の場合は空リスト)
-                        bonus_role_ids_list = [rid.strip() for rid in bonus_role_ids_str.split(',') if rid.strip().isdigit()]
+                        bonus_role_ids_str = str(row.get("bonus_role_ids", ""))
+                        # ① 全角カンマ・改行・タブ・全角空白などを半角カンマに統一
+                        normalized = re.sub(r"[，\s]+", ",", bonus_role_ids_str.strip())
+                        # ② 正規表現で 17〜20 桁の数字をすべて抽出
+                        bonus_role_ids_list = re.findall(r"\d{17,20}", normalized)
 
                         loaded_config[guild_id] = {
                             "server_name": str(row.get("server_name", "")),

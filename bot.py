@@ -91,13 +91,10 @@ def parse_duration_to_seconds(text: str) -> int:
     match = re.fullmatch(r"(\d+)\s*([smhd])", text.lower().strip())
     if not match:
         logger.warning(f"Invalid duration format: '{text}'. Using default 15s.")
-        return 15
+        return 10  # デフォルト10秒
     num, unit = int(match.group(1)), match.group(2)
     multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-    seconds = num * multipliers[unit]
-    # Discordのタイムアウト上限 (View: 15分*4 = 3600s * 4 = 14400s?) を考慮するかどうか
-    # ここでは特に上限は設けない
-    return seconds
+    return num * multipliers[unit]
 
 # 定数：Embed の色
 EMBED_COLOR = discord.Color(0x836EF9)
@@ -108,16 +105,7 @@ class DataManager:
         """ボット全体のデータ管理"""
         self.valid_uids: Set[str] = set()
         self.user_image_map: Dict[str, str] = {}
-        # guild_config の型定義を明確化
         self.guild_config: Dict[str, Dict[str, Any]] = {}
-        # 例: { "guild_id_str": {
-        #          "server_name": "Server Name",
-        #          "channel_id": "123...",
-        #          "role_id": "456...",
-        #          "message_id": "789...",
-        #          "bonus_role_ids": ["111...", "222..."] # 文字列のリスト
-        #      }
-        #    }
         self.granted_history: Dict[str, List[Dict[str, str]]] = {}
 
     async def _get_or_create_worksheet(self, sheet_name: str, rows: str = "1000", cols: str = "10") -> Optional[gspread.Worksheet]:
@@ -563,97 +551,83 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 
 # --- スラッシュコマンド ---
 
-@bot.tree.command(name="setup", description="Post/Update the eligibility buttons and set the main role.")
+@bot.tree.command(name="setup", description="Post/Update the eligibility buttons and set the role.")
 @app_commands.default_permissions(administrator=True)
-@app_commands.describe(channel="Channel for the buttons.", role="Main role for eligible users.")
+@app_commands.describe(
+    channel="Channel for the eligibility buttons.",
+    role="Role to grant to eligible users."
+)
 async def setup_command(interaction: discord.Interaction, channel: discord.TextChannel, role: discord.Role):
-    if not interaction.guild: return await interaction.response.send_message("Server only.", ephemeral=True)
+    if not interaction.guild:
+        return await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
     guild_id_str = str(interaction.guild.id)
+
     # --- 権限チェック ---
     if not interaction.app_permissions.manage_roles:
-        return await interaction.response.send_message(
-            "I need the **Manage Roles** permission.", ephemeral=True)
-
+         return await interaction.response.send_message("I need the 'Manage Roles' permission.", ephemeral=True)
     if interaction.guild.me.top_role <= role:
-        return await interaction.response.send_message(
-            f"My highest role **{interaction.guild.me.top_role.name}** is not high enough to manage **{role.name}**. "
-            "Please move my role above the target role.", ephemeral=True)
-
-    perms_me = channel.permissions_for(interaction.guild.me)
-    if not (perms_me.send_messages and perms_me.embed_links and
-            perms_me.read_message_history and perms_me.manage_messages):
-        return await interaction.response.send_message(
-            f"I need **Send Messages / Embed Links / Read Message History / Manage Messages** in {channel.mention}.",
+         return await interaction.response.send_message(
+            f"My highest role ('{interaction.guild.me.top_role.name}') isn't high enough to manage the '{role.name}' role. Please move my role higher.",
             ephemeral=True)
+    if not channel.permissions_for(interaction.guild.me).send_messages or \
+       not channel.permissions_for(interaction.guild.me).embed_links or \
+       not channel.permissions_for(interaction.guild.me).read_message_history or \
+       not channel.permissions_for(interaction.guild.me).manage_messages: # メッセージ編集/取得のため
+         return await interaction.response.send_message(
+            f"I need permissions to 'Send Messages', 'Embed Links', 'Read Message History', and 'Manage Messages' in {channel.mention}.", ephemeral=True)
 
-    await interaction.response.defer(ephemeral=True)
-    embed = discord.Embed(title="Check Eligibility & C Image", description="...", color=EMBED_COLOR) # descriptionは前回のコード参照
-    view = CombinedView()
-    message_id_to_save, message_link, op_type = None, "N/A", "created"
-    # ... (既存メッセージ更新 or 新規作成ロジックは省略、前回のコード参照) ...
-    # --- 既存メッセージの更新を試行 ---
-    old_conf = data_manager.guild_config.get(guild_id_str)
-    if old_conf and old_conf.get("message_id") and old_conf.get("channel_id") == str(channel.id):
-        old_msg_id = old_conf["message_id"]
-        if old_msg_id.isdigit():
+    await interaction.response.defer(ephemeral=True) # 時間がかかる可能性
+
+    embed = discord.Embed(
+        title="Check Eligibility & C Image",
+        description="Click the buttons below:\n"
+                    "1. **Check Eligibility**: Grants the designated role if you are on the list and shows your C image.\n"
+                    "2. **Check Your C**: Shows your C image without granting the role.",
+        color=EMBED_COLOR
+    )
+    view = CombinedView() # 永続ビューを使用
+
+    message_id_to_save = None
+    message_link = "Not available"
+    operation_type = "created" # "created" or "updated"
+
+    # --- 既存メッセージの更新試行 ---
+    old_config = data_manager.guild_config.get(guild_id_str)
+    if old_config and old_config.get("message_id") and old_config.get("channel_id") == str(channel.id):
+        old_msg_id_str = old_config["message_id"]
+        if old_msg_id_str.isdigit():
             try:
-                old_msg = await channel.fetch_message(int(old_msg_id))
+                old_msg = await channel.fetch_message(int(old_msg_id_str))
                 await old_msg.edit(embed=embed, view=view)
                 message_id_to_save = old_msg.id
                 message_link = old_msg.jump_url
-                op_type = "updated"
+                operation_type = "updated"
+                logger.info(f"Updated existing eligibility message {message_id_to_save} in guild {guild_id_str}, channel {channel.id}.")
             except discord.NotFound:
-                logger.warning(f"Old setup message ({old_msg_id}) not found, creating new one.")
+                logger.warning(f"Old message (ID: {old_msg_id_str}) not found in channel {channel.id}. Creating a new message.")
             except discord.Forbidden:
-                return await interaction.followup.send(
-                    f"❌ I cannot edit the existing setup message in {channel.mention}. "
-                    "Delete it manually or give me permission.", ephemeral=True)
+                logger.error(f"Failed to edit old message (ID: {old_msg_id_str}) in channel {channel.id}. Insufficient permissions.")
+                # 編集権限がない場合はフォローアップで通知し、新規作成は行わない方が混乱が少ないかも
+                return await interaction.followup.send(f"Failed to update: I lack permission to edit the existing message in {channel.mention}. Please check my permissions or delete the old message manually.", ephemeral=True)
             except discord.HTTPException as e:
-                return await interaction.followup.send(f"❌ HTTP error while editing message: {e}", ephemeral=True)
+                logger.error(f"Failed to edit old message (ID: {old_msg_id_str}) due to HTTP error: {e}")
+                return await interaction.followup.send(f"An error occurred while trying to update the message: {e}", ephemeral=True)
 
-    # --- 新規メッセージ送信 ---
+    # --- 新規メッセージ作成 ---
     if message_id_to_save is None:
         try:
             new_msg = await channel.send(embed=embed, view=view)
             message_id_to_save = new_msg.id
             message_link = new_msg.jump_url
+            logger.info(f"Sent new eligibility message {message_id_to_save} to guild {guild_id_str}, channel {channel.id}.")
         except discord.Forbidden:
-            return await interaction.followup.send(
-                f"❌ I cannot post messages in {channel.mention}.", ephemeral=True)
+            logger.error(f"Failed to send message to channel {channel.id}. Insufficient permissions.")
+            return await interaction.followup.send(f"Failed to send message: I lack permission to send messages in {channel.mention}.", ephemeral=True)
         except discord.HTTPException as e:
-            return await interaction.followup.send(f"❌ HTTP error while sending message: {e}", ephemeral=True)
+            logger.error(f"Failed to send message to channel {channel.id} due to HTTP error: {e}")
+            return await interaction.followup.send(f"An error occurred while trying to send the message: {e}", ephemeral=True)
 
-    # --- 設定保存 ---
-    if message_id_to_save:
-        cfg = data_manager.guild_config.get(guild_id_str, {})
-        cfg.update({
-            "server_name": interaction.guild.name,
-            "channel_id": str(channel.id),
-            "role_id": str(role.id),
-            "message_id": str(message_id_to_save),
-            # bonus_role_ids は変更しない
-            "bonus_role_ids": cfg.get("bonus_role_ids", [])
-        })
-        data_manager.guild_config[guild_id_str] = cfg
-        await data_manager.save_guild_config_sheet()
-        await interaction.followup.send(
-            f"✅ Setup **{op_type}**! Buttons → {channel.mention} (<{message_link}>)\n"
-            f"Eligible users get {role.mention}.", ephemeral=True)
-    else:
-        await interaction.followup.send("❌ Setup failed: message could not be posted.", ephemeral=True)
-
-    try:
-        # ここでメッセージ送信/編集処理 (前回のコードから流用)
-        # 例: new_msg = await channel.send(embed=embed, view=view); message_id_to_save = new_msg.id
-        # 例: old_msg = await channel.fetch_message(...); await old_msg.edit(...); message_id_to_save = old_msg.id
-        # (ここでは省略)
-        # ダミー処理: 実際には上記のコメント部分に送信/編集コードが必要
-        if True: # 仮に成功したとする
-             message_id_to_save = 12345 # ダミーID
-             message_link = f"https://discord.com/channels/{guild_id_str}/{channel.id}/{message_id_to_save}" # ダミーリンク
-        else:
-             raise discord.DiscordException("Failed to send/edit message") # 失敗した場合
-
+    # --- 設定の保存 ---
         if message_id_to_save:
             current_config = data_manager.guild_config.get(guild_id_str, {})
             current_config.update({
@@ -666,14 +640,14 @@ async def setup_command(interaction: discord.Interaction, channel: discord.TextC
             })
             data_manager.guild_config[guild_id_str] = current_config
             await data_manager.save_guild_config_sheet()
-            await interaction.followup.send(f"Setup {op_type} in {channel.mention} (<{message_link}>). Role: {role.mention}.", ephemeral=True)
-        else: # メッセージ送信/編集に失敗した場合 (本来は上のtry-except内で処理される)
-             await interaction.followup.send("Setup failed: Could not post/update message.", ephemeral=True)
-
-    except Exception as e:
-         logger.error(f"Error during /setup execution: {e}", exc_info=True)
-         await interaction.followup.send(f"An error occurred during setup: {e}", ephemeral=True)
-
+            await interaction.followup.send(
+                f"Setup {operation_type} successfully! Buttons are active in {channel.mention} (<{message_link}>).\n"
+                f"Eligible users will receive the {role.mention} role.",
+                ephemeral=True
+            )
+        else:
+            # メッセージ送信/編集に失敗した場合
+            await interaction.followup.send("Setup failed. Could not post or update the buttons message.", ephemeral=True)
 
 @bot.tree.command(name="reloadlist", description="Reload eligible users and images from the sheet.")
 @app_commands.default_permissions(administrator=True)
@@ -751,49 +725,81 @@ async def extractinfo_command(interaction: discord.Interaction):
         logger.error(f"Error during /extractinfo: {e}", exc_info=True)
         await interaction.followup.send(f"Error extracting info: {e}", ephemeral=True)
 
-@bot.tree.command(name="reset_history", description="⚠️ Reset role assignment history for this server.")
+@bot.tree.command(name="reset_history", description="⚠️ Reset the role assignment history for this server.")
 @app_commands.default_permissions(administrator=True)
 async def reset_history_command(interaction: discord.Interaction):
-    if not interaction.guild: return await interaction.response.send_message("Server only.", ephemeral=True)
+    """履歴リセットコマンド: このサーバーのロール付与履歴を消去"""
+    if not interaction.guild:
+        return await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
     guild_id_str = str(interaction.guild.id)
+
     await interaction.response.defer(ephemeral=True)
-    # ... (履歴リセット処理は省略、前回のコード参照) ...
-    # ↓↓↓ 実行後 ↓↓↓
-    try:
-        # メモリクリア
-        if guild_id_str in data_manager.granted_history: data_manager.granted_history[guild_id_str] = []
-        # シートクリア (前回のコードの _clear_guild_history_from_sheet を呼び出す)
-        ws = await data_manager._get_or_create_worksheet(GRANTED_HISTORY_SHEET)
-        if ws:
-            def _clear_sheet():
+
+    # メモリ上の履歴をクリア
+    if guild_id_str in data_manager.granted_history:
+        data_manager.granted_history[guild_id_str] = []
+        logger.info(f"Cleared history for guild {guild_id_str} from memory.")
+    else:
+        logger.info(f"No history found in memory for guild {guild_id_str} to clear.")
+
+    # Google Sheets 上の履歴もクリア (該当ギルドのみ削除)
+    ws = await data_manager._get_or_create_worksheet(GRANTED_HISTORY_SHEET)
+    if ws:
+        def _clear_guild_history_from_sheet():
+            try:
+                all_records_with_headers = ws.get_all_values() # ヘッダー含む全行取得
+                if not all_records_with_headers: return # 空なら何もしない
+
+                header = all_records_with_headers[0]
+                rows_to_keep = [header] # ヘッダーは保持
+                deleted_count = 0
+
+                # ヘッダーから guild_id の列インデックスを取得 (デフォルトは0)
+                guild_id_col_index = 0
                 try:
-                    all_rows = ws.get_all_values()          # ヘッダー＋データ
-                    if not all_rows:
-                        return 0
-                    header = all_rows[0]
-                    gid_col = header.index("guild_id") if "guild_id" in header else 0
-                    keep_rows = [header]
-                    deleted = 0
-                    for row in all_rows[1:]:
-                        if len(row) <= gid_col or row[gid_col] != guild_id_str:
-                            keep_rows.append(row)
-                        else:
-                            deleted += 1
-                    ws.clear()
-                    ws.update('A1', keep_rows, value_input_option='USER_ENTERED')
-                    return deleted
-                except Exception as e:
-                    logger.error(f"Sheet clear error: {e}")
-                    raise
+                    guild_id_col_index = header.index("guild_id")
+                except ValueError:
+                    logger.warning(f"'guild_id' column not found in header of '{GRANTED_HISTORY_SHEET}'. Assuming first column.")
 
-                 return 10 # 仮に10件削除したとする
-            deleted_count = await asyncio.to_thread(_clear_sheet) # ダミー実行
-            await interaction.followup.send(f"History reset. {deleted_count} sheet entries removed.", ephemeral=True)
-        else: await interaction.followup.send("History reset in memory, but sheet access failed.", ephemeral=True)
-    except Exception as e:
-        logger.error(f"Error during /reset_history: {e}", exc_info=True)
-        await interaction.followup.send(f"Error resetting history: {e}", ephemeral=True)
+                # ヘッダー以外の行をチェック
+                for row in all_records_with_headers[1:]:
+                    # 列数が足りない行はスキップ
+                    if len(row) <= guild_id_col_index:
+                        continue
+                    # 該当ギルドIDでない行のみ保持
+                    if row[guild_id_col_index] != guild_id_str:
+                        rows_to_keep.append(row)
+                    else:
+                        deleted_count += 1
 
+                # シートをクリアして保持する行だけ書き戻す
+                ws.clear()
+                ws.update('A1', rows_to_keep, value_input_option='USER_ENTERED')
+                logger.info(f"Removed {deleted_count} history entries for guild {guild_id_str} from sheet '{GRANTED_HISTORY_SHEET}'.")
+                return deleted_count
+            except APIError as e:
+                 logger.error(f"API error clearing history for guild {guild_id_str} in sheet: {e}")
+                 raise # エラーを呼び出し元に伝える
+            except Exception as e:
+                 logger.error(f"Unexpected error clearing history for guild {guild_id_str} in sheet: {e}")
+                 raise # エラーを呼び出し元に伝える
+
+        try:
+            deleted_count = await asyncio.to_thread(_clear_guild_history_from_sheet)
+            await interaction.followup.send(
+                f"Role assignment history for **{interaction.guild.name}** has been reset. {deleted_count} entries removed from the sheet.",
+                ephemeral=True
+            )
+        except Exception: # シート操作でエラーが発生した場合
+             await interaction.followup.send(
+                 f"History in memory was cleared, but an error occurred while updating the Google Sheet. Please check the logs.",
+                 ephemeral=True
+             )
+    else:
+        await interaction.followup.send(
+            f"Could not access the history sheet '{GRANTED_HISTORY_SHEET}'. History reset failed for the sheet.",
+            ephemeral=True
+        )
 
 # --- Bonus Feature Commands (Modified) ---
 

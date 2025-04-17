@@ -874,11 +874,18 @@ async def remove_bonus_role_command(interaction: discord.Interaction, role: disc
 
 @bot.tree.command(name="bonus", description="Post a temporary button for users to claim a bonus.")
 @app_commands.describe(channel="Channel for the bonus button.", duration="Button lifetime (e.g., '10s', '10m', '1h'). Default: 10s.")
-async def bonus_command(interaction: discord.Interaction, channel: discord.TextChannel, duration: str = "10s"):
+async def bonus_command(                 # ← ここから既存
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    duration: str = "10s"
+):
     """ボーナスコマンド (権限チェック修正)"""
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server member only.", ephemeral=True)
     guild_id_str = str(interaction.guild.id)
+
+    #   再起動直後などでロールがキャッシュに無い場合に備えて取得し直す
+    await interaction.guild.fetch_roles()
 
     # --- 権限チェック (修正) ---
     conf = data_manager.guild_config.get(guild_id_str, {})

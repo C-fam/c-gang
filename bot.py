@@ -613,41 +613,50 @@ async def setup_command(interaction: discord.Interaction, channel: discord.TextC
                 logger.error(f"Failed to edit old message (ID: {old_msg_id_str}) due to HTTP error: {e}")
                 return await interaction.followup.send(f"An error occurred while trying to update the message: {e}", ephemeral=True)
 
-    # --- 新規メッセージ作成 ---
-    if message_id_to_save is None:
-        try:
-            new_msg = await channel.send(embed=embed, view=view)
-            message_id_to_save = new_msg.id
-            message_link = new_msg.jump_url
-            logger.info(f"Sent new eligibility message {message_id_to_save} to guild {guild_id_str}, channel {channel.id}.")
-        except discord.Forbidden:
-            logger.error(f"Failed to send message to channel {channel.id}. Insufficient permissions.")
-            return await interaction.followup.send(f"Failed to send message: I lack permission to send messages in {channel.mention}.", ephemeral=True)
-        except discord.HTTPException as e:
-            logger.error(f"Failed to send message to channel {channel.id} due to HTTP error: {e}")
-            return await interaction.followup.send(f"An error occurred while trying to send the message: {e}", ephemeral=True)
+    # --- メッセージ送信／編集 ---
+    try:
+        if message_id_to_save is None:        # 既存が無ければ新規送信
+            sent_msg = await channel.send(embed=embed, view=view)
+            message_id_to_save = sent_msg.id
+            message_link = sent_msg.jump_url
+            logger.info(
+                f"Sent new eligibility message {message_id_to_save} "
+                f"to guild {guild_id_str} (channel {channel.id})."
+            )
+        # 既存メッセージを編集した場合は `message_id_to_save` と `message_link`
+        # がすでにセットされているので何もしない
+    except discord.Forbidden:
+        logger.error(f"Cannot post eligibility message in channel {channel.id} – missing permission.")
+        return await interaction.followup.send(
+            f"❌ I cannot post messages in {channel.mention}.", ephemeral=True)
+    except discord.HTTPException as e:
+        logger.error(f"HTTP error while posting eligibility message: {e}")
+        return await interaction.followup.send(
+            f"❌ HTTP error while posting message: {e}", ephemeral=True)
 
     # --- 設定の保存 ---
-        if message_id_to_save:
-            current_config = data_manager.guild_config.get(guild_id_str, {})
-            current_config.update({
-                "server_name": interaction.guild.name,
-                "channel_id": str(channel.id),
-                "role_id": str(role.id),
-                "message_id": str(message_id_to_save),
-                # bonus_role_ids はこのコマンドでは変更しない
-                "bonus_role_ids": current_config.get("bonus_role_ids", []) # 既存の値維持
-            })
-            data_manager.guild_config[guild_id_str] = current_config
-            await data_manager.save_guild_config_sheet()
-            await interaction.followup.send(
-                f"Setup {operation_type} successfully! Buttons are active in {channel.mention} (<{message_link}>).\n"
-                f"Eligible users will receive the {role.mention} role.",
-                ephemeral=True
-            )
-        else:
-            # メッセージ送信/編集に失敗した場合
-            await interaction.followup.send("Setup failed. Could not post or update the buttons message.", ephemeral=True)
+    if message_id_to_save:
+        cfg = data_manager.guild_config.get(guild_id_str, {})
+        cfg.update({
+            "server_name": interaction.guild.name,
+            "channel_id": str(channel.id),
+            "role_id":     str(role.id),
+            "message_id":  str(message_id_to_save),
+            # bonus_role_ids は /setup では触らない
+            "bonus_role_ids": cfg.get("bonus_role_ids", [])
+        })
+        data_manager.guild_config[guild_id_str] = cfg
+        await data_manager.save_guild_config_sheet()
+
+        await interaction.followup.send(
+            f"✅ Setup **{operation_type}** complete! Buttons are live in {channel.mention} "
+            f"(<{message_link}>). Eligible users will receive {role.mention}.",
+            ephemeral=True
+        )
+    else:
+        await interaction.followup.send(
+            "❌ Setup failed: message could not be posted or updated.", ephemeral=True
+        )
 
 @bot.tree.command(name="reloadlist", description="Reload eligible users and images from the sheet.")
 @app_commands.default_permissions(administrator=True)
